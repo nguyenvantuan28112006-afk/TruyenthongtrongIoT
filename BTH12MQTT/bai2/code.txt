@@ -1,0 +1,127 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+const char* WIFI_SSID = "FPT Cuong Mo";
+const char* WIFI_PASS = "123456789";
+const char* MQTT_HOST = "192.168.1.8";   // IP của Home Assistant
+const int   MQTT_PORT = 1883;
+const char* MQTT_USER = "mqtt_esp32";
+const char* MQTT_PASS = "1234";
+
+#define SENSOR_PIN 4
+#define ACTIVE_LEVEL LOW      // đổi thành HIGH nếu module ngược
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+Adafruit_SSD1306 display(128, 64, &Wire, -1);
+
+bool vibrating = false;
+bool oledOn = true;
+bool armed = true;
+unsigned long lastVib = 0;
+
+// ----- Vẽ màn hình OLED -----
+void drawDisplay() {
+  display.clearDisplay();
+  if (oledOn) {
+    display.setTextColor(WHITE);
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.print(armed ? "Giam sat: BAT" : "Giam sat: TAT");
+    display.setTextSize(2);
+    display.setCursor(0, 30);
+    display.print(vibrating ? "CO RUNG!" : "Co RUNGGG");
+  }
+  display.display();
+}
+
+// ----- Gửi cấu hình để HA tự tạo thực thể -----
+void publishDiscovery() {
+  String dev = "\"device\":{\"identifiers\":[\"esp32s3_bai12\"],\"name\":\"ESP32-S3 Bai 12.2\"}";
+  String av  = "\"availability_topic\":\"esp32s3/avail\",";
+
+  client.publish("homeassistant/binary_sensor/esp32s3_rung/config",
+    ("{\"name\":\"Cảm biến rung\",\"unique_id\":\"esp32s3_rung\",\"device_class\":\"vibration\","
+     "\"state_topic\":\"esp32s3/rung\"," + av + dev + "}").c_str(), true);
+
+  client.publish("homeassistant/switch/esp32s3_oled/config",
+    ("{\"name\":\"Màn hình OLED\",\"unique_id\":\"esp32s3_oled\","
+     "\"command_topic\":\"esp32s3/oled/set\",\"state_topic\":\"esp32s3/oled/state\"," + av + dev + "}").c_str(), true);
+
+  client.publish("homeassistant/switch/esp32s3_arm/config",
+    ("{\"name\":\"Chế độ giám sát\",\"unique_id\":\"esp32s3_arm\","
+     "\"command_topic\":\"esp32s3/arm/set\",\"state_topic\":\"esp32s3/arm/state\"," + av + dev + "}").c_str(), true);
+}
+
+void publishStates() {
+  client.publish("esp32s3/rung", vibrating ? "ON" : "OFF", true);
+  client.publish("esp32s3/oled/state", oledOn ? "ON" : "OFF", true);
+  client.publish("esp32s3/arm/state", armed ? "ON" : "OFF", true);
+}
+
+// ----- Nhận lệnh từ HA -----
+void onMessage(char* topic, byte* payload, unsigned int len) {
+  String msg = "";
+  for (unsigned int i = 0; i < len; i++) msg += (char)payload[i];
+  String t = topic;
+
+  if (t == "esp32s3/oled/set") oledOn = (msg == "ON");
+  if (t == "esp32s3/arm/set")  armed  = (msg == "ON");
+
+  publishStates();
+  drawDisplay();
+}
+
+void connectMQTT() {
+  while (!client.connected()) {
+    if (client.connect("esp32s3_bai12", MQTT_USER, MQTT_PASS,
+                       "esp32s3/avail", 1, true, "offline")) {
+      client.publish("esp32s3/avail", "online", true);
+      publishDiscovery();
+      publishStates();
+      client.subscribe("esp32s3/oled/set");
+      client.subscribe("esp32s3/arm/set");
+    } else {
+      delay(5000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(SENSOR_PIN, INPUT);
+  Wire.begin(8, 9);
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+
+  client.setServer(MQTT_HOST, 1883);
+  client.setBufferSize(1024);
+  client.setCallback(onMessage);
+  connectMQTT();
+  drawDisplay();
+}
+
+void loop() {
+  if (!client.connected()) connectMQTT();
+  client.loop();
+
+  if (armed && digitalRead(SENSOR_PIN) == ACTIVE_LEVEL) {
+    lastVib = millis();
+    if (!vibrating) {
+      vibrating = true;
+      publishStates();
+      drawDisplay();
+    }
+  }
+
+  if (vibrating && millis() - lastVib > 3000) {
+    vibrating = false;
+    publishStates();
+    drawDisplay();
+  }
+}

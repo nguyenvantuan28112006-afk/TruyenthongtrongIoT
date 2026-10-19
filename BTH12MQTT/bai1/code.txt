@@ -1,0 +1,101 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+const char* WIFI_SSID = "FPT Cuong Mo";
+const char* WIFI_PASS = "123456789";
+const char* MQTT_HOST = "192.168.1.8";   // IP của Home Assistant
+const int   MQTT_PORT = 1883;
+const char* MQTT_USER = "mqtt_esp32";
+const char* MQTT_PASS = "1234";
+
+const int  SENSOR_PIN   = 4;
+const int  ACTIVE_LEVEL = LOW;             // đổi thành HIGH nếu module của bạn ngược
+const unsigned long HOLD_MS = 3000;        // giữ trạng thái "rung" tối thiểu 3 giây
+
+const char* STATE_TOPIC  = "esp32s3/sw420/state";
+const char* AVAIL_TOPIC  = "esp32s3/sw420/availability";
+const char* CONFIG_TOPIC = "homeassistant/binary_sensor/esp32s3_sw420/config";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+bool vibrating = false;
+unsigned long lastVibration = 0;
+
+void connectWiFi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi OK: " + WiFi.localIP().toString());
+}
+
+void publishDiscovery() {
+  String payload =
+    "{"
+    "\"name\":\"Cảm biến rung\","
+    "\"unique_id\":\"esp32s3_sw420_01\","
+    "\"device_class\":\"vibration\","
+    "\"state_topic\":\"esp32s3/sw420/state\","
+    "\"availability_topic\":\"esp32s3/sw420/availability\","
+    "\"payload_on\":\"ON\","
+    "\"payload_off\":\"OFF\","
+    "\"device\":{"
+      "\"identifiers\":[\"esp32s3_sw420_01\"],"
+      "\"name\":\"ESP32-S3 SW-420\","
+      "\"manufacturer\":\"DIY\","
+      "\"model\":\"ESP32-S3 + SW-420\""
+    "}"
+    "}";
+  client.publish(CONFIG_TOPIC, payload.c_str(), true);   // retained
+}
+
+void connectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Kết nối MQTT...");
+    if (client.connect("esp32s3_sw420", MQTT_USER, MQTT_PASS,
+                       AVAIL_TOPIC, 1, true, "offline")) {
+      Serial.println("OK");
+      client.publish(AVAIL_TOPIC, "online", true);
+      publishDiscovery();
+      client.publish(STATE_TOPIC, vibrating ? "ON" : "OFF", true);
+    } else {
+      Serial.printf("lỗi rc=%d, thử lại sau 5s\n", client.state());
+      delay(5000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(SENSOR_PIN, INPUT);
+  connectWiFi();
+  client.setServer(MQTT_HOST, MQTT_PORT);
+  client.setBufferSize(512);   // payload discovery khá dài
+  connectMQTT();
+}
+
+void loop() {
+  if (WiFi.status() != WL_CONNECTED) connectWiFi();
+  if (!client.connected()) connectMQTT();
+  client.loop();
+
+  unsigned long now = millis();
+
+  if (digitalRead(SENSOR_PIN) == ACTIVE_LEVEL) {
+    lastVibration = now;
+    if (!vibrating) {
+      vibrating = true;
+      client.publish(STATE_TOPIC, "ON", true);
+      Serial.println("Phát hiện rung!");
+    }
+  }
+
+  if (vibrating && (now - lastVibration > HOLD_MS)) {
+    vibrating = false;
+    client.publish(STATE_TOPIC, "OFF", true);
+    Serial.println("Hết rung");
+  }
+}

@@ -1,0 +1,204 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <Preferences.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+const char* WIFI_SSID = "FPT Cuong Mo";
+const char* WIFI_PASS = "123456789";
+const char* MQTT_HOST = "192.168.1.8";   // IP của Home Assistant
+const int   MQTT_PORT = 1883;
+const char* MQTT_USER = "mqtt_esp32";
+const char* MQTT_PASS = "1234";
+
+#define SENSOR_PIN   4
+#define FORGET_PIN   0          // nút BOOT trên board
+#define ACTIVE_LEVEL LOW        // đổi thành HIGH nếu module ngược
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+Adafruit_SSD1306 display(128, 64, &Wire, -1);
+Preferences prefs;
+
+bool vibrating = false;
+bool oledOn = true;
+bool armed = true;
+unsigned long lastVib = 0;
+unsigned long btnStart = 0;
+
+int  bootCount = 0;
+String memStatus = "MAC DINH";   // DA NHO / MAC DINH / DA QUEN
+
+// ----- Lưu (chỉ ghi khi thay đổi) -----
+void saveState() {
+  if (prefs.getBool("oled", true) != oledOn) prefs.putBool("oled", oledOn);
+  if (prefs.getBool("arm", true)  != armed)  prefs.putBool("arm", armed);
+}
+
+// ----- OLED -----
+void drawDisplay() {
+  display.clearDisplay();
+  display.setTextColor(WHITE);
+  display.setTextSize(1);
+
+  if (!oledOn) {                      // OLED "tắt": chỉ để lại 1 chấm nhỏ
+    display.setCursor(0, 0);
+    display.print(".");
+    display.display();
+    return;
+  }
+
+  display.setCursor(0, 0);
+  display.print(armed ? "Giam sat: BAT" : "Giam sat: TAT");
+
+  display.setCursor(0, 14);
+  display.setTextSize(2);
+  display.print(!armed ? "TAM DUNG" : (vibrating ? "CO RUNG!" : "Binh thuong"));
+
+  display.setTextSize(1);
+  display.setCursor(0, 40);
+  display.print("Boot lan: ");
+  display.print(bootCount);
+
+  display.setCursor(0, 54);
+  display.print("Nguon: ");
+  display.print(memStatus);
+  display.display();
+}
+
+// ----- Discovery -----
+void publishDiscovery() {
+  String dev = "\"device\":{\"identifiers\":[\"esp32s3_bai12\"],\"name\":\"ESP32-S3 Bai 12.2\"}";
+  String av  = "\"availability_topic\":\"esp32s3/avail\",";
+
+  client.publish("homeassistant/binary_sensor/esp32s3_rung/config",
+    ("{\"name\":\"Cảm biến rung\",\"unique_id\":\"esp32s3_rung\",\"device_class\":\"vibration\","
+     "\"state_topic\":\"esp32s3/rung\"," + av + dev + "}").c_str(), true);
+
+  client.publish("homeassistant/switch/esp32s3_oled/config",
+    ("{\"name\":\"Màn hình OLED\",\"unique_id\":\"esp32s3_oled\","
+     "\"command_topic\":\"esp32s3/oled/set\",\"state_topic\":\"esp32s3/oled/state\"," + av + dev + "}").c_str(), true);
+
+  client.publish("homeassistant/switch/esp32s3_arm/config",
+    ("{\"name\":\"Chế độ giám sát\",\"unique_id\":\"esp32s3_arm\","
+     "\"command_topic\":\"esp32s3/arm/set\",\"state_topic\":\"esp32s3/arm/state\"," + av + dev + "}").c_str(), true);
+
+  client.publish("homeassistant/sensor/esp32s3_boot/config",
+    ("{\"name\":\"Số lần khởi động\",\"unique_id\":\"esp32s3_boot\","
+     "\"state_topic\":\"esp32s3/boot\",\"icon\":\"mdi:restart\"," + av + dev + "}").c_str(), true);
+
+  client.publish("homeassistant/sensor/esp32s3_mem/config",
+    ("{\"name\":\"Nguồn trạng thái\",\"unique_id\":\"esp32s3_mem\","
+     "\"state_topic\":\"esp32s3/mem\",\"icon\":\"mdi:memory\"," + av + dev + "}").c_str(), true);
+}
+
+void publishStates() {
+  client.publish("esp32s3/rung", vibrating ? "ON" : "OFF", true);
+  client.publish("esp32s3/oled/state", oledOn ? "ON" : "OFF", true);
+  client.publish("esp32s3/arm/state", armed ? "ON" : "OFF", true);
+  client.publish("esp32s3/boot", String(bootCount).c_str(), true);
+  client.publish("esp32s3/mem", memStatus.c_str(), true);
+}
+
+// ----- Nhận lệnh -----
+void onMessage(char* topic, byte* payload, unsigned int len) {
+  String msg = "";
+  for (unsigned int i = 0; i < len; i++) msg += (char)payload[i];
+  String t = topic;
+
+  if (t == "esp32s3/oled/set") oledOn = (msg == "ON");
+  if (t == "esp32s3/arm/set")  armed  = (msg == "ON");
+  if (!armed) vibrating = false;
+
+  saveState();
+  memStatus = "DA LUU";           // vừa ghi vào flash
+  publishStates();
+  drawDisplay();
+}
+
+// ----- QUÊN: xóa sạch flash, về mặc định -----
+void forgetAll() {
+  prefs.clear();
+  oledOn = true;
+  armed = true;
+  bootCount = 0;
+  prefs.putInt("boot", 0);
+  memStatus = "DA QUEN";
+  Serial.println("DA XOA BO NHO!");
+  drawDisplay();
+  if (client.connected()) publishStates();
+}
+
+void connectMQTT() {
+  while (!client.connected()) {
+    if (client.connect("esp32s3_bai12", MQTT_USER, MQTT_PASS,
+                       "esp32s3/avail", 1, true, "offline")) {
+      client.publish("esp32s3/avail", "online", true);
+      publishDiscovery();
+      publishStates();
+      client.subscribe("esp32s3/oled/set");
+      client.subscribe("esp32s3/arm/set");
+    } else {
+      delay(5000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(SENSOR_PIN, INPUT);
+  pinMode(FORGET_PIN, INPUT_PULLUP);
+
+  Wire.begin(8, 9);
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+
+  // ----- Khôi phục từ flash -----
+  prefs.begin("bai12", false);
+  bool daCoDuLieu = prefs.isKey("oled");        // đã từng lưu chưa?
+  oledOn    = prefs.getBool("oled", true);
+  armed     = prefs.getBool("arm", true);
+  bootCount = prefs.getInt("boot", 0) + 1;      // mỗi lần bật nguồn +1
+  prefs.putInt("boot", bootCount);
+  memStatus = daCoDuLieu ? "DA NHO" : "MAC DINH";
+
+  Serial.printf("Boot lan %d | oled=%d arm=%d | %s\n",
+                bootCount, oledOn, armed, memStatus.c_str());
+  drawDisplay();                                 // hiện ngay, chưa cần mạng
+
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+
+  client.setServer(MQTT_HOST, 1883);
+  client.setBufferSize(1024);
+  client.setCallback(onMessage);
+  connectMQTT();
+}
+
+void loop() {
+  if (!client.connected()) connectMQTT();
+  client.loop();
+
+  // ----- Giữ nút BOOT 3 giây = QUÊN -----
+  if (digitalRead(FORGET_PIN) == LOW) {
+    if (btnStart == 0) btnStart = millis();
+    if (millis() - btnStart > 3000) { forgetAll(); btnStart = 0; delay(1000); }
+  } else {
+    btnStart = 0;
+  }
+
+  // ----- Cảm biến rung -----
+  if (armed && digitalRead(SENSOR_PIN) == ACTIVE_LEVEL) {
+    lastVib = millis();
+    if (!vibrating) {
+      vibrating = true;
+      publishStates();
+      drawDisplay();
+    }
+  }
+  if (vibrating && millis() - lastVib > 3000) {
+    vibrating = false;
+    publishStates();
+    drawDisplay();
+  }
+}

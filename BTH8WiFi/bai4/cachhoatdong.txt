@@ -1,0 +1,2 @@
+nút boot thay cho cảm biến
+khi ấn nút boot thì màn hình tắt và ngược lại 

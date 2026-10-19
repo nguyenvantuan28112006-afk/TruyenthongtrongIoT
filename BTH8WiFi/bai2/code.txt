@@ -1,0 +1,58 @@
+esphome:                          # Khối thông tin chung của thiết bị
+  name: tuann                     # Tên thiết bị (dùng làm hostname trên mạng, viết thường, không dấu cách)
+  friendly_name: tuann            # Tên hiển thị trong Home Assistant
+
+esp32:                            # Cấu hình chip ESP32
+  variant: esp32s3                # Loại chip: ESP32-S3
+  flash_size: 8MB                 # Dung lượng bộ nhớ flash của bo mạch
+  framework:
+    type: esp-idf                 # Dùng framework ESP-IDF (chính thức của Espressif, ổn định cho S3)
+
+logger:                           # Ghi log để xem trong ESPHome khi chạy
+  hardware_uart: USB_SERIAL_JTAG  # Xuất log qua cổng USB gốc của ESP32-S3
+
+api:                              # Kết nối với Home Assistant (đây là phần giúp đèn hiện trong HA)
+  encryption:
+    key: "DWmlodEOqc8XAMIR2LzocPyazTLD3c9V3pepXhnTV/Q="   # Khóa mã hóa, HA sẽ hỏi khóa này khi thêm thiết bị
+
+ota:                              # Cho phép nạp code qua Wi-Fi (Over The Air)
+  - platform: esphome             # Dùng cơ chế OTA của ESPHome
+    encryption:
+
+wifi:                             # Kết nối Wi-Fi
+  ssid: "FPT Cuong Mo"            # Tên Wi-Fi (đặt trong ngoặc kép vì có dấu cách)
+  password: "123456789"
+  ap:
+    ssid: tuann Fallback Hotspot
+    password: "123456789"
+captive_portal:                   # Bật trang cấu hình Wi-Fi khi kết nối vào hotspot dự phòng
+
+web_server:                       # Bật trang web điều khiển trực tiếp trên ESP32
+  port: 80                        # Truy cập bằng http://<IP của ESP32> (không cần gõ cổng)
+
+light:                            # Khai báo các đèn
+  - platform: esp32_rmt_led_strip # Driver điều khiển LED RGB thông minh (WS2812) bằng bộ RMT của ESP32
+    id: onboard_rgb               # Mã định danh nội bộ, dùng khi viết tự động hóa trong code
+    name: "Onboard RGB"           # Tên đèn hiển thị trong Home Assistant
+    pin: GPIO48                   # Chân nối với LED (DevKitC-1 đời v1.1 dùng GPIO38, không sáng thì đổi)
+    num_leds: 1                   # Số LED (bo chỉ có 1 LED RGB)
+    chipset: WS2812               # Loại chip LED
+    channel_colors: GRB                # Thứ tự màu: WS2812 thường là Xanh lá - Đỏ - Xanh dương
+    restore_mode: ALWAYS_OFF      # Khi khởi động lại thì đèn luôn tắt
+
+    effects:                      # Các hiệu ứng, chọn được trong Home Assistant
+      - random:                   # Hiệu ứng đổi màu ngẫu nhiên
+          name: "Ngau nhien"      # Tên hiệu ứng hiển thị
+      - pulse:                    # Hiệu ứng sáng tối dần (như đang thở)
+          name: "Tho"             # Tên hiệu ứng hiển thị
+      - strobe:                   # Hiệu ứng nhấp nháy theo chuỗi màu tự định nghĩa
+          name: "Nhay"            # Tên hiệu ứng hiển thị
+          colors:                 # Danh sách các bước, chạy lần lượt rồi lặp lại
+            - state: true         # Bước 1: bật đèn
+              brightness: 100%    # Độ sáng tối đa
+              red: 100%           # Đỏ 100%
+              green: 0%           # Xanh lá 0%
+              blue: 0%            # Xanh dương 0% (kết quả: màu đỏ)
+              duration: 500ms     # Giữ trạng thái này 0,5 giây
+            - state: false        # Bước 2: tắt đèn
+              duration: 500ms     # Giữ trạng thái tắt 0,5 giây

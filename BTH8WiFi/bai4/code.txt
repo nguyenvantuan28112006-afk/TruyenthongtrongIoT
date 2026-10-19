@@ -1,0 +1,87 @@
+# Board: ESP32-S3 DevKitC-1 (Espressif)
+esphome:
+  name: auto
+  friendly_name: auto
+
+esp32:
+  variant: esp32s3
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: "tO+mGtmn9llFQhKD1dKvX4x2S+XuHz1mQMQzAE3/h1U="
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: "FPT Cuong Mo"
+  password: "123456789"
+  ap:
+    ssid: auto Fallback Hotspot
+    password: "yIluB9KNmZmB"
+
+captive_portal:
+
+
+i2c:
+  sda: GPIO8
+  scl: GPIO9
+  scan: true
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_big
+    size: 20
+    glyphs: " XinchàoMtắ"
+
+display:
+  - platform: ssd1306_i2c
+    id: oled
+    model: "SSD1306 128x64"
+    address: 0x3C
+    lambda: |-
+      it.printf(64, 32, id(font_big), TextAlign::CENTER, "Xin chào");
+
+switch:
+  # Công tắc màn hình: hiện trên HA là Bật / Tắt
+  - platform: template
+    name: "Màn hình OLED"
+    id: screen_switch
+    optimistic: true
+    restore_mode: ALWAYS_ON
+    turn_on_action:
+      - lambda: id(oled).turn_on();
+      - text_sensor.template.publish:
+          id: screen_text
+          state: "Màn hình bật"
+    turn_off_action:
+      - lambda: id(oled).turn_off();
+      - text_sensor.template.publish:
+          id: screen_text
+          state: "Màn hình tắt"
+
+binary_sensor:
+  # Nút BOOT trên board (GPIO0): bấm 1 lần đảo trạng thái màn hình
+  - platform: gpio
+    name: "Nút BOOT"
+    id: boot_button
+    pin:
+      number: GPIO0
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+    on_press:
+      - switch.toggle: screen_switch
+
+text_sensor:
+  - platform: template
+    name: "Trạng thái màn hình"
+    id: screen_text
